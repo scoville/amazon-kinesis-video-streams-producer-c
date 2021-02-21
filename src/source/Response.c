@@ -414,6 +414,10 @@ STATUS curlCompleteSync(PCurlResponse pCurlResponse)
     } else if (result != CURLE_OK) {
         curl_easy_getinfo(pCurlResponse->pCurl, CURLINFO_EFFECTIVE_URL, &url);
         DLOGW("curl perform failed for url %s with result %s: %s", url, curl_easy_strerror(result), pCurlResponse->callInfo.errorBuffer);
+        if (strcmp(curl_easy_strerror(result), "Timeout was reached") == 0
+            && strlen(pCurlResponse->callInfo.errorBuffer) >= strlen("Operation too slow.")
+            && memcmp(pCurlResponse->callInfo.errorBuffer, "Operation too slow.", strlen("Operation too slow.")) == 0)
+            abort();
 
         pCurlResponse->callInfo.callResult = getServiceCallResultFromCurlStatus(result);
     } else {
