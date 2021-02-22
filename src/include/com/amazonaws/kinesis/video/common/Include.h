@@ -363,7 +363,7 @@ extern "C" {
 /**
  * Low speed limits in 100ns for the amount of bytes per this duration
  */
-#define DEFAULT_LOW_SPEED_TIME_LIMIT (30 * HUNDREDS_OF_NANOS_IN_A_SECOND)
+#define DEFAULT_LOW_SPEED_TIME_LIMIT (5 * HUNDREDS_OF_NANOS_IN_A_SECOND)
 
 #define REQUEST_HEADER_DELIMITER_SIZE (2 * SIZEOF(CHAR))
 /*!@} */
