@@ -165,6 +165,7 @@ else()
 endif()
 
 if(${CMAKE_C_COMPILER_ID} MATCHES "GNU|Clang")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -w")
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")
 
     if(ADD_MUCLIBC)
