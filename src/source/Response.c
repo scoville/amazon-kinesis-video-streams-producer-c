@@ -416,8 +416,10 @@ STATUS curlCompleteSync(PCurlResponse pCurlResponse)
         DLOGW("curl perform failed for url %s with result %s: %s", url, curl_easy_strerror(result), pCurlResponse->callInfo.errorBuffer);
         if (strcmp(curl_easy_strerror(result), "Timeout was reached") == 0
             && strlen(pCurlResponse->callInfo.errorBuffer) >= strlen("Operation too slow.")
-            && memcmp(pCurlResponse->callInfo.errorBuffer, "Operation too slow.", strlen("Operation too slow.")) == 0)
+            && memcmp(pCurlResponse->callInfo.errorBuffer, "Operation too slow.", strlen("Operation too slow.")) == 0) {
+            DLOGE("reached timeout while waiting for data: aborting application");
             abort();
+        }
 
         pCurlResponse->callInfo.callResult = getServiceCallResultFromCurlStatus(result);
     } else {
