@@ -423,8 +423,8 @@ STATUS curlCompleteSync(PCurlResponse pCurlResponse)
         if (strcmp(curl_easy_strerror(result), "Timeout was reached") == 0
             && strlen(pCurlResponse->callInfo.errorBuffer) >= strlen("Operation too slow.")
             && memcmp(pCurlResponse->callInfo.errorBuffer, "Operation too slow.", strlen("Operation too slow.")) == 0) {
-            syslog(LOG_ERR, "kvs-lib Response.c: reached timeout while waiting for data: aborting application\n");
-            DLOGE("reached timeout while waiting for data: aborting application");
+            syslog(LOG_ERR, "kvs-lib Response.c: reached timeout while waiting for data: aborting curl call\n");
+            DLOGE("reached timeout while waiting for data: aborting curl call");
             retStatus = 1;
             goto CleanUp;
         }
