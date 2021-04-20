@@ -1,6 +1,9 @@
 /**
  * Kinesis Video Producer Response functionality
  */
+
+#include <syslog.h>
+
 #define LOG_CLASS "Response"
 #include "Include_i.h"
 
@@ -413,10 +416,14 @@ STATUS curlCompleteSync(PCurlResponse pCurlResponse)
         pCurlResponse->callInfo.callResult = SERVICE_CALL_REQUEST_TIMEOUT;
     } else if (result != CURLE_OK) {
         curl_easy_getinfo(pCurlResponse->pCurl, CURLINFO_EFFECTIVE_URL, &url);
+        syslog(
+            LOG_WARNING, "kvs-lib Response.c: curl perform failed for url %s with result %s: %s\n",
+            url, curl_easy_strerror(result), pCurlResponse->callInfo.errorBuffer);
         DLOGW("curl perform failed for url %s with result %s: %s", url, curl_easy_strerror(result), pCurlResponse->callInfo.errorBuffer);
         if (strcmp(curl_easy_strerror(result), "Timeout was reached") == 0
             && strlen(pCurlResponse->callInfo.errorBuffer) >= strlen("Operation too slow.")
             && memcmp(pCurlResponse->callInfo.errorBuffer, "Operation too slow.", strlen("Operation too slow.")) == 0) {
+            syslog(LOG_ERR, "kvs-lib Response.c: reached timeout while waiting for data: aborting application\n");
             DLOGE("reached timeout while waiting for data: aborting application");
             abort();
         }
