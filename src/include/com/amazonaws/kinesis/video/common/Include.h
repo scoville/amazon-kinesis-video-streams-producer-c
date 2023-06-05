@@ -52,15 +52,6 @@ extern "C" {
 #define STATUS_FILE_CREDENTIAL_PROVIDER_INVALID_FILE_FORMAT STATUS_COMMON_PRODUCER_BASE + 0x00000024
 /*!@} */
 
-/**
- * Macro for checking whether the status code should be retried by the continuous retry logic
- */
-#define IS_RETRIABLE_COMMON_LIB_ERROR(error)                                                                                                         \
-    ((error) == STATUS_INVALID_API_CALL_RETURN_JSON || (error) == STATUS_CURL_INIT_FAILED || (error) == STATUS_CURL_LIBRARY_INIT_FAILED ||           \
-     (error) == STATUS_HMAC_GENERATION_ERROR || (error) == STATUS_IOT_FAILED || (error) == STATUS_IOT_EXPIRATION_OCCURS_IN_PAST ||                   \
-     (error) == STATUS_IOT_EXPIRATION_PARSING_FAILED || (error) == STATUS_IOT_CREATE_LWS_CONTEXT_FAILED ||                                           \
-     (error) == STATUS_FILE_CREDENTIAL_PROVIDER_OPEN_FILE_FAILED || (error) == STATUS_FILE_CREDENTIAL_PROVIDER_INVALID_FILE_LENGTH ||                \
-     (error) == STATUS_FILE_CREDENTIAL_PROVIDER_INVALID_FILE_FORMAT)
 
 ////////////////////////////////////////////////////
 /// New common base status code.
@@ -76,8 +67,25 @@ extern "C" {
  * Continue errors from the new common base
  */
 #define STATUS_COMMON_BASE 0x16000000
+#define STATUS_CURL_PERFORM_FAILED                      STATUS_COMMON_BASE + 0x00000001
+#define STATUS_IOT_INVALID_RESPONSE_LENGTH              STATUS_COMMON_BASE + 0x00000002
+#define STATUS_IOT_NULL_AWS_CREDS                       STATUS_COMMON_BASE + 0x00000003
+#define STATUS_IOT_INVALID_URI_LEN                      STATUS_COMMON_BASE + 0x00000004
+#define STATUS_TIMESTAMP_STRING_UNRECOGNIZED_FORMAT     STATUS_COMMON_BASE + 0x00000005
 /*!@} */
 
+/**
+ * Macro for checking whether the status code should be retried by the continuous retry logic
+ */
+#define IS_RETRIABLE_COMMON_LIB_ERROR(error)                                                                                                         \
+    ((error) == STATUS_INVALID_API_CALL_RETURN_JSON || (error) == STATUS_CURL_INIT_FAILED || (error) == STATUS_CURL_LIBRARY_INIT_FAILED ||           \
+     (error) == STATUS_HMAC_GENERATION_ERROR || (error) == STATUS_CURL_PERFORM_FAILED || (error) == STATUS_IOT_INVALID_RESPONSE_LENGTH ||            \
+     (error) == STATUS_IOT_NULL_AWS_CREDS || (error) == STATUS_IOT_INVALID_URI_LEN || (error) == STATUS_IOT_EXPIRATION_OCCURS_IN_PAST ||                   \
+     (error) == STATUS_IOT_EXPIRATION_PARSING_FAILED || (error) == STATUS_IOT_CREATE_LWS_CONTEXT_FAILED ||                                           \
+     (error) == STATUS_FILE_CREDENTIAL_PROVIDER_OPEN_FILE_FAILED || (error) == STATUS_FILE_CREDENTIAL_PROVIDER_INVALID_FILE_LENGTH ||                \
+     (error) == STATUS_FILE_CREDENTIAL_PROVIDER_INVALID_FILE_FORMAT)
+    
+    
 /////////////////////////////////////////////////////
 /// Lengths of different character arrays
 /////////////////////////////////////////////////////
@@ -776,7 +784,7 @@ PUBLIC_API BOOL compareJsonString(PCHAR, jsmntok_t*, jsmntype_t, PCHAR);
 /**
  * @brief Converts the timestamp string to time
  *
- * @param[in] PCHAR String to covert
+ * @param[in] PCHAR String to covert (MUST be null terminated)
  * @param[in] UINT64 Current time
  * @param[in,out] PUINT64 Converted time
  *
