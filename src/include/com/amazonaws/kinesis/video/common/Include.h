@@ -52,7 +52,6 @@ extern "C" {
 #define STATUS_FILE_CREDENTIAL_PROVIDER_INVALID_FILE_FORMAT STATUS_COMMON_PRODUCER_BASE + 0x00000024
 /*!@} */
 
-
 ////////////////////////////////////////////////////
 /// New common base status code.
 /// All common library status codes defined
@@ -66,12 +65,12 @@ extern "C" {
 /**
  * Continue errors from the new common base
  */
-#define STATUS_COMMON_BASE 0x16000000
-#define STATUS_CURL_PERFORM_FAILED                      STATUS_COMMON_BASE + 0x00000001
-#define STATUS_IOT_INVALID_RESPONSE_LENGTH              STATUS_COMMON_BASE + 0x00000002
-#define STATUS_IOT_NULL_AWS_CREDS                       STATUS_COMMON_BASE + 0x00000003
-#define STATUS_IOT_INVALID_URI_LEN                      STATUS_COMMON_BASE + 0x00000004
-#define STATUS_TIMESTAMP_STRING_UNRECOGNIZED_FORMAT     STATUS_COMMON_BASE + 0x00000005
+#define STATUS_COMMON_BASE                          0x16000000
+#define STATUS_CURL_PERFORM_FAILED                  STATUS_COMMON_BASE + 0x00000001
+#define STATUS_IOT_INVALID_RESPONSE_LENGTH          STATUS_COMMON_BASE + 0x00000002
+#define STATUS_IOT_NULL_AWS_CREDS                   STATUS_COMMON_BASE + 0x00000003
+#define STATUS_IOT_INVALID_URI_LEN                  STATUS_COMMON_BASE + 0x00000004
+#define STATUS_TIMESTAMP_STRING_UNRECOGNIZED_FORMAT STATUS_COMMON_BASE + 0x00000005
 /*!@} */
 
 /**
@@ -80,12 +79,11 @@ extern "C" {
 #define IS_RETRIABLE_COMMON_LIB_ERROR(error)                                                                                                         \
     ((error) == STATUS_INVALID_API_CALL_RETURN_JSON || (error) == STATUS_CURL_INIT_FAILED || (error) == STATUS_CURL_LIBRARY_INIT_FAILED ||           \
      (error) == STATUS_HMAC_GENERATION_ERROR || (error) == STATUS_CURL_PERFORM_FAILED || (error) == STATUS_IOT_INVALID_RESPONSE_LENGTH ||            \
-     (error) == STATUS_IOT_NULL_AWS_CREDS || (error) == STATUS_IOT_INVALID_URI_LEN || (error) == STATUS_IOT_EXPIRATION_OCCURS_IN_PAST ||                   \
+     (error) == STATUS_IOT_NULL_AWS_CREDS || (error) == STATUS_IOT_INVALID_URI_LEN || (error) == STATUS_IOT_EXPIRATION_OCCURS_IN_PAST ||             \
      (error) == STATUS_IOT_EXPIRATION_PARSING_FAILED || (error) == STATUS_IOT_CREATE_LWS_CONTEXT_FAILED ||                                           \
      (error) == STATUS_FILE_CREDENTIAL_PROVIDER_OPEN_FILE_FAILED || (error) == STATUS_FILE_CREDENTIAL_PROVIDER_INVALID_FILE_LENGTH ||                \
      (error) == STATUS_FILE_CREDENTIAL_PROVIDER_INVALID_FILE_FORMAT)
-    
-    
+
 /////////////////////////////////////////////////////
 /// Lengths of different character arrays
 /////////////////////////////////////////////////////
@@ -141,9 +139,9 @@ extern "C" {
 #define MAX_ROLE_ALIAS_LEN 128
 
 /**
- * Maximum allowed string length for IoT thing name
+ * Maximum allowed string length for IoT thing name: https://docs.aws.amazon.com/iot/latest/apireference/API_CreateThing.html
  */
-#define MAX_IOT_THING_NAME_LEN MAX_STREAM_NAME_LEN
+#define MAX_IOT_THING_NAME_LEN 128
 
 /**
  * Maximum allowed request header length
@@ -185,6 +183,11 @@ extern "C" {
  * Default Audio track ID to be used
  */
 #define DEFAULT_AUDIO_TRACK_ID 2
+
+/**
+ * Default Audio only track ID to be used
+ */
+#define DEFAULT_AUDIO_ONLY_TRACK_ID 1
 
 /**
  * Default period for the cached endpoint update
@@ -311,10 +314,26 @@ extern "C" {
  */
 #define KINESIS_VIDEO_SERVICE_NAME "kinesisvideo"
 
+#define AWS_KVS_FIPS_ENDPOINT_POSTFIX "-fips"
+
 /**
  * Control plane postfix
  */
 #define CONTROL_PLANE_URI_POSTFIX ".amazonaws.com"
+
+#define CONTROL_PLANE_URI_POSTFIX_CN ".amazonaws.com.cn"
+
+#define CONTROL_PLANE_URI_POSTFIX_ISO ".c2s.ic.gov"
+
+#define CONTROL_PLANE_URI_POSTFIX_ISO_B ".sc2s.sgov.gov"
+
+#define AWS_ISO_B_REGION_PREFIX "us-isob-"
+
+#define AWS_ISO_REGION_PREFIX "us-iso-"
+
+#define AWS_GOV_CLOUD_REGION_PREFIX "us-gov-"
+
+#define AWS_CN_REGION_PREFIX "cn-"
 
 /**
  * Default user agent name
@@ -631,6 +650,26 @@ PUBLIC_API STATUS createCurlIotCredentialProvider(PCHAR, PCHAR, PCHAR, PCHAR, PC
  * @return STATUS code of the execution. STATUS_SUCCESS on success
  */
 PUBLIC_API STATUS createLwsIotCredentialProvider(PCHAR, PCHAR, PCHAR, PCHAR, PCHAR, PCHAR, PAwsCredentialProvider*);
+
+/**
+ * @brief Creates an IoT based AWS credential provider object with time function which is based on libCurl
+ *
+ * @param[in] PCHAR IoT endpoint
+ * @param[in] PCHAR Cert file path
+ * @param[in] PCHAR Private key file path
+ * @param[in] PCHAR CA cert file path
+ * @param[in] PCHAR Role alias
+ * @param[in] PCHAR IoT thing name
+ * @param[in] UINT64 connection timeout
+ * @param[in] UINT64 completion timeout
+ * @param[in] GetCurrentTimeFunc Custom current time function
+ * @param[in] UINT64 Time function custom data
+ * @param[out] PAwsCredentialProvider* Constructed AWS credentials provider object
+ *
+ * @return STATUS code of the execution. STATUS_SUCCESS on success
+ */
+PUBLIC_API STATUS createCurlIotCredentialProviderWithTimeAndTimeout(PCHAR, PCHAR, PCHAR, PCHAR, PCHAR, PCHAR, UINT64, UINT64, GetCurrentTimeFunc,
+                                                                    UINT64, PAwsCredentialProvider*);
 
 /**
  * @brief Creates an IoT based AWS credential provider object with time function which is based on libCurl

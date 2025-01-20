@@ -45,6 +45,8 @@ STATUS createDefaultDeviceInfo(PDeviceInfo* ppDeviceInfo)
 
     // use 0 for default values
     pDeviceInfo->clientInfo.stopStreamTimeout = 0;
+    pDeviceInfo->clientInfo.serviceCallConnectionTimeout = SERVICE_CALL_DEFAULT_CONNECTION_TIMEOUT;
+    pDeviceInfo->clientInfo.serviceCallCompletionTimeout = SERVICE_CALL_DEFAULT_TIMEOUT;
     pDeviceInfo->clientInfo.createClientTimeout = 0;
     pDeviceInfo->clientInfo.createStreamTimeout = 0;
 
@@ -100,8 +102,8 @@ STATUS setDeviceInfoStorageSizeBasedOnBitrateAndBufferDuration(PDeviceInfo pDevi
     CHK(averageBitsPerSecond > 0 && bufferDuration > 0, STATUS_INVALID_ARG);
 
     estimatedStorageSize =
-        (UINT64)(pDeviceInfo->streamCount * (((DOUBLE) averageBitsPerSecond / 8) * ((DOUBLE) bufferDuration / HUNDREDS_OF_NANOS_IN_A_SECOND)) *
-                 STORAGE_ALLOCATION_DEFRAGMENTATION_FACTOR);
+        (UINT64) (pDeviceInfo->streamCount * (((DOUBLE) averageBitsPerSecond / 8) * ((DOUBLE) bufferDuration / HUNDREDS_OF_NANOS_IN_A_SECOND)) *
+                  STORAGE_ALLOCATION_DEFRAGMENTATION_FACTOR);
 
     CHK_STATUS(setDeviceInfoStorageSize(pDeviceInfo, estimatedStorageSize));
 

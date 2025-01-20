@@ -181,9 +181,7 @@ ProducerClientTestBase::ProducerClientTestBase() :
         mAccessKeyIdSet(FALSE),
         mCaCertPath(NULL),
         mProducerThread(INVALID_TID_VALUE),
-        mProducerStopped(FALSE),
         mStartProducer(FALSE),
-        mStopProducer(FALSE),
         mAccessKey(NULL),
         mSecretKey(NULL),
         mSessionToken(NULL),
@@ -233,11 +231,20 @@ ProducerClientTestBase::ProducerClientTestBase() :
         mDescribeFailCount(0),
         mDescribeRecoverCount(0)
 {
+    STATUS retStatus = STATUS_SUCCESS;
     auto logLevelStr = GETENV("AWS_KVS_LOG_LEVEL");
     if (logLevelStr != NULL) {
-        assert(STRTOUI32(logLevelStr, NULL, 10, &this->loggerLogLevel) == STATUS_SUCCESS);
+        retStatus = STRTOUI32(logLevelStr, NULL, 10, &this->loggerLogLevel);
+        if (retStatus != STATUS_SUCCESS) {
+            // Throwing instead of asserting since this is being done in a constructor. ASSERT_EQ
+            // causes the function to exit immediately and constructor does not have a return type.
+            // The goal is to ensure if an env is set, it is set with a valid value and not empty
+            throw std::runtime_error("Failed to set log level from env");
+        }
         SET_LOGGER_LOG_LEVEL(this->loggerLogLevel);
     }
+    ATOMIC_STORE_BOOL(&mStopProducer, FALSE);
+    ATOMIC_STORE_BOOL(&mProducerStopped, FALSE);
 
     // Store the function pointers
     gTotalProducerClientMemoryUsage = 0;
@@ -314,6 +321,7 @@ ProducerClientTestBase::ProducerClientTestBase() :
     mStreamInfo.streamCaps.frameTimecodes = TRUE;
     mStreamInfo.streamCaps.recalculateMetrics = TRUE;
     mStreamInfo.streamCaps.recoverOnError = TRUE;
+    mStreamInfo.streamCaps.allowStreamCreation = TRUE;
     mStreamInfo.streamCaps.avgBandwidthBps = 4 * 1024 * 1024;
     mStreamInfo.streamCaps.bufferDuration = TEST_STREAM_BUFFER_DURATION;
     mStreamInfo.streamCaps.replayDuration = 10 * HUNDREDS_OF_NANOS_IN_A_SECOND;
@@ -331,7 +339,7 @@ ProducerClientTestBase::ProducerClientTestBase() :
     mFps = TEST_FPS;
     mKeyFrameInterval = TEST_FPS;
     mFrameSize = TEST_FRAME_SIZE;
-    mFrameBuffer = (PBYTE) MEMALLOC(mFrameSize);
+    mFrameBuffer = (PBYTE) MEMCALLOC(mFrameSize, SIZEOF(BYTE));
 
     mFrame.duration = HUNDREDS_OF_NANOS_IN_A_SECOND / mFps;
     mFrame.frameData = mFrameBuffer;
@@ -506,12 +514,12 @@ STATUS ProducerClientTestBase::createTestStream(UINT32 index, STREAMING_TYPE str
     for (UINT32 i = 0; i < tagCount; i++) {
         tags[i].name = (PCHAR) MEMALLOC(SIZEOF(CHAR) * (MAX_TAG_NAME_LEN + 1));
         tags[i].value = (PCHAR) MEMALLOC(SIZEOF(CHAR) * (MAX_TAG_VALUE_LEN + 1));
-        SPRINTF(tags[i].name, "testTag_%d_%d", index, i);
-        SPRINTF(tags[i].value, "testTag_%d_%d_Value", index, i);
+        SNPRINTF(tags[i].name, MAX_TAG_NAME_LEN, "testTag_%d_%d", index, i);
+        SNPRINTF(tags[i].value, MAX_TAG_VALUE_LEN, "testTag_%d_%d_Value", index, i);
         tags[i].version = TAG_CURRENT_VERSION;
     }
 
-    SPRINTF(mStreamInfo.name, "ScaryTestStream_%d", index);
+    SNPRINTF(mStreamInfo.name, MAX_STREAM_NAME_LEN + 1, "ScaryTestStream_%d", index);
     mStreamInfo.tagCount = tagCount;
     mStreamInfo.tags = tags;
     mStreamInfo.streamCaps.streamingType = streamingType;
@@ -534,7 +542,7 @@ STATUS ProducerClientTestBase::createTestStream(UINT32 index, STREAMING_TYPE str
 
 VOID ProducerClientTestBase::freeStreams(BOOL sync)
 {
-    mProducerStopped = TRUE;
+    ATOMIC_STORE_BOOL(&mProducerStopped, TRUE);
     for (UINT32 i = 0; i < TEST_STREAM_COUNT; i++) {
         DLOGD("Freeing stream index %u with handle value %" PRIu64 " %s", i, mStreams[i], sync ? "synchronously" : "asynchronously");
 
@@ -560,6 +568,7 @@ STATUS ProducerClientTestBase::curlEasyPerformHookFunc(PCurlResponse pCurlRespon
 
     // Get the test object
     ProducerClientTestBase* pTest = (ProducerClientTestBase*) pCurlResponse->pCurlRequest->pCurlApiCallbacks->hookCustomData;
+    MUTEX_LOCK(pTest->mTestCallbackLock);
 
     DLOGV("Curl perform hook for %s", pCurlResponse->pCurlRequest->requestInfo.url);
 
@@ -622,6 +631,7 @@ STATUS ProducerClientTestBase::curlEasyPerformHookFunc(PCurlResponse pCurlRespon
             pTest->mPutMediaCallResult = SERVICE_CALL_RESULT_OK;
         }
     }
+    MUTEX_UNLOCK(pTest->mTestCallbackLock);
 
     return retStatus;
 }
@@ -639,6 +649,7 @@ STATUS ProducerClientTestBase::curlWriteCallbackHookFunc(PCurlResponse pCurlResp
 
     // Get the test object
     ProducerClientTestBase* pTest = (ProducerClientTestBase*) pCurlResponse->pCurlRequest->pCurlApiCallbacks->hookCustomData;
+    MUTEX_LOCK(pTest->mTestCallbackLock);
 
     pTest->mWriteCallbackFnCount++;
 
@@ -646,6 +657,7 @@ STATUS ProducerClientTestBase::curlWriteCallbackHookFunc(PCurlResponse pCurlResp
         *ppRetBuffer = pTest->mWriteBuffer;
         *pRetDataSize = pTest->mWriteDataSize;
     }
+    MUTEX_UNLOCK(pTest->mTestCallbackLock);
 
     return pTest->mWriteStatus;
 }
@@ -670,6 +682,7 @@ STATUS ProducerClientTestBase::curlReadCallbackHookFunc(PCurlResponse pCurlRespo
 
     // Get the test object
     ProducerClientTestBase* pTest = (ProducerClientTestBase*) pCurlResponse->pCurlRequest->pCurlApiCallbacks->hookCustomData;
+    MUTEX_LOCK(pTest->mTestCallbackLock);
 
     pTest->mReadCallbackFnCount++;
 
@@ -678,16 +691,17 @@ STATUS ProducerClientTestBase::curlReadCallbackHookFunc(PCurlResponse pCurlRespo
     } else {
         pTest->mReadStatus = status;
     }
+    MUTEX_UNLOCK(pTest->mTestCallbackLock);
 
     return pTest->mReadStatus;
 }
 
 STATUS ProducerClientTestBase::testFreeApiCallbackFunc(PUINT64 customData)
 {
-    ProducerClientTestBase* pTestBase = (ProducerClientTestBase*) *customData;
-
-    pTestBase->mFreeApiCallbacksFnCount++;
-
+    ProducerClientTestBase* pTest = (ProducerClientTestBase*) *customData;
+    MUTEX_LOCK(pTest->mTestCallbackLock);
+    pTest->mFreeApiCallbacksFnCount++;
+    MUTEX_UNLOCK(pTest->mTestCallbackLock);
     return STATUS_SUCCESS;
 }
 

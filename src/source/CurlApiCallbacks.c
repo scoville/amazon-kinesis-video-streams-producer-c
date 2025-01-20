@@ -79,12 +79,23 @@ STATUS createCurlApiCallbacks(PCallbacksProvider pCallbacksProvider, PCHAR regio
 
     // Set the control plane URL
     if (controlPlaneUrl == NULL || controlPlaneUrl[0] == '\0') {
-        // Create a fully qualified URI
-        SNPRINTF(pCurlApiCallbacks->controlPlaneUrl, MAX_URI_CHAR_LEN, "%s%s.%s%s", CONTROL_PLANE_URI_PREFIX, KINESIS_VIDEO_SERVICE_NAME,
-                 pCurlApiCallbacks->region, CONTROL_PLANE_URI_POSTFIX);
-        // If region is in CN, add CN region uri postfix
-        if (STRSTR(pCurlApiCallbacks->region, "cn-")) {
-            STRCAT(pCurlApiCallbacks->controlPlaneUrl, ".cn");
+        if (0 == STRNCMP(pCurlApiCallbacks->region, AWS_ISO_B_REGION_PREFIX, STRLEN(AWS_ISO_B_REGION_PREFIX))) {
+            SNPRINTF(pCurlApiCallbacks->controlPlaneUrl, MAX_URI_CHAR_LEN, "%s%s%s.%s%s", CONTROL_PLANE_URI_PREFIX, KINESIS_VIDEO_SERVICE_NAME,
+                     AWS_KVS_FIPS_ENDPOINT_POSTFIX, pCurlApiCallbacks->region, CONTROL_PLANE_URI_POSTFIX_ISO_B);
+            // Region is in "aws-iso" partition
+        } else if (0 == STRNCMP(pCurlApiCallbacks->region, AWS_ISO_REGION_PREFIX, STRLEN(AWS_ISO_REGION_PREFIX))) {
+            SNPRINTF(pCurlApiCallbacks->controlPlaneUrl, MAX_URI_CHAR_LEN, "%s%s%s.%s%s", CONTROL_PLANE_URI_PREFIX, KINESIS_VIDEO_SERVICE_NAME,
+                     AWS_KVS_FIPS_ENDPOINT_POSTFIX, pCurlApiCallbacks->region, CONTROL_PLANE_URI_POSTFIX_ISO);
+        } else if (0 == STRNCMP(pCurlApiCallbacks->region, AWS_GOV_CLOUD_REGION_PREFIX, STRLEN(AWS_GOV_CLOUD_REGION_PREFIX))) {
+            SNPRINTF(pCurlApiCallbacks->controlPlaneUrl, MAX_URI_CHAR_LEN, "%s%s%s.%s%s", CONTROL_PLANE_URI_PREFIX, KINESIS_VIDEO_SERVICE_NAME,
+                     AWS_KVS_FIPS_ENDPOINT_POSTFIX, pCurlApiCallbacks->region, CONTROL_PLANE_URI_POSTFIX);
+        } else if (0 == STRNCMP(pCurlApiCallbacks->region, AWS_CN_REGION_PREFIX, STRLEN(AWS_CN_REGION_PREFIX))) {
+            SNPRINTF(pCurlApiCallbacks->controlPlaneUrl, MAX_URI_CHAR_LEN, "%s%s.%s%s", CONTROL_PLANE_URI_PREFIX, KINESIS_VIDEO_SERVICE_NAME,
+                     pCurlApiCallbacks->region, CONTROL_PLANE_URI_POSTFIX_CN);
+        } else {
+            // Create a fully qualified URI
+            SNPRINTF(pCurlApiCallbacks->controlPlaneUrl, MAX_URI_CHAR_LEN, "%s%s.%s%s", CONTROL_PLANE_URI_PREFIX, KINESIS_VIDEO_SERVICE_NAME,
+                     pCurlApiCallbacks->region, CONTROL_PLANE_URI_POSTFIX);
         }
     } else {
         STRNCPY(pCurlApiCallbacks->controlPlaneUrl, controlPlaneUrl, MAX_URI_CHAR_LEN);
@@ -945,7 +956,7 @@ STATUS createStreamCurl(UINT64 customData, PCHAR deviceName, PCHAR streamName, P
     }
 
     // Expressed in hours
-    retentionInHours = (UINT64)(retentionPeriod / HUNDREDS_OF_NANOS_IN_AN_HOUR);
+    retentionInHours = (UINT64) (retentionPeriod / HUNDREDS_OF_NANOS_IN_AN_HOUR);
     SNPRINTF(paramsJson, ARRAY_SIZE(paramsJson), CREATE_STREAM_PARAM_JSON_TEMPLATE, deviceName, streamName, contentType, kmsKey, retentionInHours);
 
     // Validate the credentials
@@ -961,7 +972,7 @@ STATUS createStreamCurl(UINT64 customData, PCHAR deviceName, PCHAR streamName, P
     // Create a request object
     currentTime = pCallbacksProvider->clientCallbacks.getCurrentTimeFn(pCallbacksProvider->clientCallbacks.customData);
     CHK_STATUS(createCurlRequest(HTTP_REQUEST_VERB_POST, url, paramsJson, streamHandle, pCurlApiCallbacks->region, currentTime,
-                                 CURL_API_DEFAULT_CONNECTION_TIMEOUT, pServiceCallContext->timeout, pServiceCallContext->callAfter,
+                                 pServiceCallContext->connectionTimeout, pServiceCallContext->timeout, pServiceCallContext->callAfter,
                                  pCurlApiCallbacks->certPath, pCredentials, pCurlApiCallbacks, &pCurlRequest));
 
     // Set the necessary headers
@@ -994,15 +1005,17 @@ STATUS createStreamCurl(UINT64 customData, PCHAR deviceName, PCHAR streamName, P
 
 CleanUp:
 
+    if (startLocked) {
+        // Release the lock to let the awaiting handler thread to continue
+        pCallbacksProvider->clientCallbacks.unlockMutexFn(pCallbacksProvider->clientCallbacks.customData, pCurlRequest->startLock);
+    }
+
     if (STATUS_FAILED(retStatus)) {
         if (IS_VALID_TID_VALUE(threadId)) {
             THREAD_CANCEL(threadId);
         }
 
         freeCurlRequest(&pCurlRequest);
-    } else if (startLocked) {
-        // Release the lock to let the awaiting handler thread to continue
-        pCallbacksProvider->clientCallbacks.unlockMutexFn(pCallbacksProvider->clientCallbacks.customData, pCurlRequest->startLock);
     }
 
     if (shutdownLocked) {
@@ -1044,7 +1057,7 @@ STATUS createStreamCachingCurl(UINT64 customData, PCHAR deviceName, PCHAR stream
         CHK(FALSE, retStatus);
     }
 
-    DLOGV("No-op CreateStream API call");
+    DLOGV("[%s] No-op CreateStream API call", streamName);
 
     retStatus = createStreamResultEvent(streamHandle, SERVICE_CALL_RESULT_OK, streamName);
 
@@ -1081,7 +1094,7 @@ PVOID createStreamCurlHandler(PVOID arg)
     pCallbacksProvider = pCurlApiCallbacks->pCallbacksProvider;
     streamArn[0] = '\0';
 
-    DLOGD("createStreamCurlHandler response %p", pCurlRequest->pCurlResponse);
+    DLOGD("[%s] createStreamCurlHandler response %p", pCurlRequest->streamName, pCurlRequest->pCurlResponse);
 
     // Acquire and release the startup lock to ensure the startup sequence is clear
     pCallbacksProvider->clientCallbacks.lockMutexFn(pCallbacksProvider->clientCallbacks.customData, pCurlRequest->startLock);
@@ -1107,7 +1120,7 @@ PVOID createStreamCurlHandler(PVOID arg)
     pResponseStr = pCurlResponse->callInfo.responseData;
     resultLen = pCurlResponse->callInfo.responseDataLen;
 
-    DLOGD("CreateStream API response: %.*s", resultLen, pResponseStr);
+    DLOGD("[%s] CreateStream API response: %.*s", pCurlRequest->streamName, resultLen, pResponseStr);
 
     // Parse the response
     jsmn_init(&parser);
@@ -1116,7 +1129,7 @@ PVOID createStreamCurlHandler(PVOID arg)
     CHK(tokens[0].type == JSMN_OBJECT, STATUS_INVALID_API_CALL_RETURN_JSON);
     for (i = 1, stopLoop = FALSE; i < (UINT32) tokenCount && !stopLoop; i++) {
         if (compareJsonString(pResponseStr, &tokens[i], JSMN_STRING, (PCHAR) "StreamARN")) {
-            strLen = (UINT32)(tokens[i + 1].end - tokens[i + 1].start);
+            strLen = (UINT32) (tokens[i + 1].end - tokens[i + 1].start);
             CHK(strLen <= MAX_ARN_LEN, STATUS_INVALID_API_CALL_RETURN_JSON);
             STRNCPY(streamArn, pResponseStr + tokens[i + 1].start, strLen);
             streamArn[strLen] = '\0';
@@ -1155,7 +1168,7 @@ CleanUp:
     LEAVES();
 
     // Returning STATUS as PVOID casting first to ptr type to avoid compiler warnings on 64bit platforms.
-    return (PVOID)(ULONG_PTR) retStatus;
+    return (PVOID) (ULONG_PTR) retStatus;
 }
 
 STATUS describeStreamCurl(UINT64 customData, PCHAR streamName, PServiceCallContext pServiceCallContext)
@@ -1194,7 +1207,7 @@ STATUS describeStreamCurl(UINT64 customData, PCHAR streamName, PServiceCallConte
     // Create a request object
     currentTime = pCallbacksProvider->clientCallbacks.getCurrentTimeFn(pCallbacksProvider->clientCallbacks.customData);
     CHK_STATUS(createCurlRequest(HTTP_REQUEST_VERB_POST, url, paramsJson, streamHandle, pCurlApiCallbacks->region, currentTime,
-                                 CURL_API_DEFAULT_CONNECTION_TIMEOUT, pServiceCallContext->timeout, pServiceCallContext->callAfter,
+                                 pServiceCallContext->connectionTimeout, pServiceCallContext->timeout, pServiceCallContext->callAfter,
                                  pCurlApiCallbacks->certPath, pCredentials, pCurlApiCallbacks, &pCurlRequest));
 
     // Set the necessary headers
@@ -1226,15 +1239,17 @@ STATUS describeStreamCurl(UINT64 customData, PCHAR streamName, PServiceCallConte
 
 CleanUp:
 
+    if (startLocked) {
+        // Release the lock to let the awaiting handler thread to continue
+        pCallbacksProvider->clientCallbacks.unlockMutexFn(pCallbacksProvider->clientCallbacks.customData, pCurlRequest->startLock);
+    }
+
     if (STATUS_FAILED(retStatus)) {
         if (IS_VALID_TID_VALUE(threadId)) {
             THREAD_CANCEL(threadId);
         }
 
         freeCurlRequest(&pCurlRequest);
-    } else if (startLocked) {
-        // Release the lock to let the awaiting handler thread to continue
-        pCallbacksProvider->clientCallbacks.unlockMutexFn(pCallbacksProvider->clientCallbacks.customData, pCurlRequest->startLock);
     }
 
     if (shutdownLocked) {
@@ -1292,7 +1307,7 @@ STATUS describeStreamCachingCurl(UINT64 customData, PCHAR streamName, PServiceCa
     streamDescription.streamStatus = STREAM_STATUS_ACTIVE;
     streamDescription.creationTime = pCallbacksProvider->clientCallbacks.getCurrentTimeFn(pCallbacksProvider->clientCallbacks.customData);
 
-    DLOGV("No-op DescribeStream API call");
+    DLOGV("[%s] No-op DescribeStream API call", streamDescription.streamName);
     retStatus = describeStreamResultEvent(streamHandle, SERVICE_CALL_RESULT_OK, &streamDescription);
 
     notifyCallResult(pCallbacksProvider, retStatus, streamHandle);
@@ -1317,7 +1332,7 @@ PVOID describeStreamCurlHandler(PVOID arg)
     UINT32 i, strLen, resultLen;
     INT32 tokenCount;
     UINT64 retention;
-    BOOL jsonInStreamDescription = FALSE, requestTerminating = FALSE;
+    BOOL jsonInStreamDescription = FALSE, requestTerminating = FALSE, responseReceived = FALSE;
     StreamDescription streamDescription;
     STREAM_HANDLE streamHandle = INVALID_STREAM_HANDLE_VALUE;
     SERVICE_CALL_RESULT callResult = SERVICE_CALL_RESULT_NOT_SET;
@@ -1350,8 +1365,7 @@ PVOID describeStreamCurlHandler(PVOID arg)
     CHK(pCurlResponse->callInfo.callResult != SERVICE_CALL_RESULT_NOT_SET, STATUS_INVALID_OPERATION);
     pResponseStr = pCurlResponse->callInfo.responseData;
     resultLen = pCurlResponse->callInfo.responseDataLen;
-
-    DLOGD("DescribeStream API response: %.*s", resultLen, pResponseStr);
+    responseReceived = TRUE;
 
     // skip json parsing if call result not ok
     CHK(pCurlResponse->callInfo.callResult == SERVICE_CALL_RESULT_OK && resultLen != 0 && pResponseStr != NULL, retStatus);
@@ -1375,43 +1389,43 @@ PVOID describeStreamCurlHandler(PVOID arg)
             }
         } else {
             if (compareJsonString(pResponseStr, &tokens[i], JSMN_STRING, (PCHAR) "DeviceName")) {
-                strLen = (UINT32)(tokens[i + 1].end - tokens[i + 1].start);
+                strLen = (UINT32) (tokens[i + 1].end - tokens[i + 1].start);
                 CHK(strLen <= MAX_DEVICE_NAME_LEN, STATUS_INVALID_API_CALL_RETURN_JSON);
                 STRNCPY(streamDescription.deviceName, pResponseStr + tokens[i + 1].start, strLen);
                 streamDescription.deviceName[MAX_DEVICE_NAME_LEN] = '\0';
                 i++;
             } else if (compareJsonString(pResponseStr, &tokens[i], JSMN_STRING, (PCHAR) "MediaType")) {
-                strLen = (UINT32)(tokens[i + 1].end - tokens[i + 1].start);
+                strLen = (UINT32) (tokens[i + 1].end - tokens[i + 1].start);
                 CHK(strLen <= MAX_CONTENT_TYPE_LEN, STATUS_INVALID_API_CALL_RETURN_JSON);
                 STRNCPY(streamDescription.contentType, pResponseStr + tokens[i + 1].start, strLen);
                 streamDescription.contentType[MAX_CONTENT_TYPE_LEN] = '\0';
                 i++;
             } else if (compareJsonString(pResponseStr, &tokens[i], JSMN_STRING, (PCHAR) "KmsKeyId")) {
-                strLen = (UINT32)(tokens[i + 1].end - tokens[i + 1].start);
+                strLen = (UINT32) (tokens[i + 1].end - tokens[i + 1].start);
                 CHK(strLen <= MAX_ARN_LEN, STATUS_INVALID_API_CALL_RETURN_JSON);
                 STRNCPY(streamDescription.kmsKeyId, pResponseStr + tokens[i + 1].start, strLen);
                 streamDescription.kmsKeyId[MAX_ARN_LEN] = '\0';
                 i++;
             } else if (compareJsonString(pResponseStr, &tokens[i], JSMN_STRING, (PCHAR) "StreamARN")) {
-                strLen = (UINT32)(tokens[i + 1].end - tokens[i + 1].start);
+                strLen = (UINT32) (tokens[i + 1].end - tokens[i + 1].start);
                 CHK(strLen <= MAX_ARN_LEN, STATUS_INVALID_API_CALL_RETURN_JSON);
                 STRNCPY(streamDescription.streamArn, pResponseStr + tokens[i + 1].start, strLen);
                 streamDescription.streamArn[MAX_ARN_LEN] = '\0';
                 i++;
             } else if (compareJsonString(pResponseStr, &tokens[i], JSMN_STRING, (PCHAR) "StreamName")) {
-                strLen = (UINT32)(tokens[i + 1].end - tokens[i + 1].start);
+                strLen = (UINT32) (tokens[i + 1].end - tokens[i + 1].start);
                 CHK(strLen <= MAX_STREAM_NAME_LEN, STATUS_INVALID_API_CALL_RETURN_JSON);
                 STRNCPY(streamDescription.streamName, pResponseStr + tokens[i + 1].start, strLen);
                 streamDescription.streamName[MAX_STREAM_NAME_LEN] = '\0';
                 i++;
             } else if (compareJsonString(pResponseStr, &tokens[i], JSMN_STRING, (PCHAR) "Version")) {
-                strLen = (UINT32)(tokens[i + 1].end - tokens[i + 1].start);
+                strLen = (UINT32) (tokens[i + 1].end - tokens[i + 1].start);
                 CHK(strLen <= MAX_UPDATE_VERSION_LEN, STATUS_INVALID_API_CALL_RETURN_JSON);
                 STRNCPY(streamDescription.updateVersion, pResponseStr + tokens[i + 1].start, strLen);
                 streamDescription.updateVersion[MAX_UPDATE_VERSION_LEN] = '\0';
                 i++;
             } else if (compareJsonString(pResponseStr, &tokens[i], JSMN_STRING, (PCHAR) "Status")) {
-                strLen = (UINT32)(tokens[i + 1].end - tokens[i + 1].start);
+                strLen = (UINT32) (tokens[i + 1].end - tokens[i + 1].start);
                 CHK(strLen <= MAX_DESCRIBE_STREAM_STATUS_LEN, STATUS_INVALID_API_CALL_RETURN_JSON);
                 streamDescription.streamStatus = getStreamStatusFromString(pResponseStr + tokens[i + 1].start, strLen);
                 i++;
@@ -1429,6 +1443,10 @@ PVOID describeStreamCurlHandler(PVOID arg)
     }
 
 CleanUp:
+
+    if (responseReceived) {
+        DLOGD("[%s] DescribeStream API response: %.*s", streamDescription.streamName, resultLen, pResponseStr);
+    }
 
     // Preserve the values as we need to free the request before the event notification
     if (pCurlRequest->pCurlResponse != NULL) {
@@ -1463,7 +1481,7 @@ CleanUp:
     LEAVES();
 
     // Returning STATUS as PVOID casting first to ptr type to avoid compiler warnings on 64bit platforms.
-    return (PVOID)(ULONG_PTR) retStatus;
+    return (PVOID) (ULONG_PTR) retStatus;
 }
 
 STATUS getStreamingEndpointCurl(UINT64 customData, PCHAR streamName, PCHAR apiName, PServiceCallContext pServiceCallContext)
@@ -1502,7 +1520,7 @@ STATUS getStreamingEndpointCurl(UINT64 customData, PCHAR streamName, PCHAR apiNa
     // Create a request object
     currentTime = pCallbacksProvider->clientCallbacks.getCurrentTimeFn(pCallbacksProvider->clientCallbacks.customData);
     CHK_STATUS(createCurlRequest(HTTP_REQUEST_VERB_POST, url, paramsJson, streamHandle, pCurlApiCallbacks->region, currentTime,
-                                 CURL_API_DEFAULT_CONNECTION_TIMEOUT, pServiceCallContext->timeout, pServiceCallContext->callAfter,
+                                 pServiceCallContext->connectionTimeout, pServiceCallContext->timeout, pServiceCallContext->callAfter,
                                  pCurlApiCallbacks->certPath, pCredentials, pCurlApiCallbacks, &pCurlRequest));
 
     // Set the necessary headers
@@ -1534,15 +1552,18 @@ STATUS getStreamingEndpointCurl(UINT64 customData, PCHAR streamName, PCHAR apiNa
 
 CleanUp:
 
+    if (startLocked) {
+        // Release the lock to let the awaiting handler thread to continue.
+        // This needs to be done before freeCurlRequest because there we will free the startLock mutex
+        pCallbacksProvider->clientCallbacks.unlockMutexFn(pCallbacksProvider->clientCallbacks.customData, pCurlRequest->startLock);
+    }
+
     if (STATUS_FAILED(retStatus)) {
         if (IS_VALID_TID_VALUE(threadId)) {
             THREAD_CANCEL(threadId);
         }
 
         freeCurlRequest(&pCurlRequest);
-    } else if (startLocked) {
-        // Release the lock to let the awaiting handler thread to continue
-        pCallbacksProvider->clientCallbacks.unlockMutexFn(pCallbacksProvider->clientCallbacks.customData, pCurlRequest->startLock);
     }
 
     if (shutdownLocked) {
@@ -1624,7 +1645,7 @@ STATUS getStreamingEndpointCachingCurl(UINT64 customData, PCHAR streamName, PCHA
         CHK(FALSE, retStatus);
     }
 
-    DLOGV("Caching GetStreamingEndpoint API call");
+    DLOGV("[%s] Caching GetStreamingEndpoint API call", streamName);
 
     // At this stage we should be holding the lock
     CHECK(endpointsLocked);
@@ -1661,9 +1682,11 @@ PVOID getStreamingEndpointCurlHandler(PVOID arg)
     STREAM_HANDLE streamHandle = INVALID_STREAM_HANDLE_VALUE;
     SERVICE_CALL_RESULT callResult = SERVICE_CALL_RESULT_NOT_SET;
     CHAR streamingEndpoint[MAX_URI_CHAR_LEN + 1];
+    CHAR streamName[MAX_STREAM_NAME_LEN + 1];
 
     CHECK(pCurlRequest != NULL && pCurlRequest->pCurlApiCallbacks != NULL && pCurlRequest->pCurlApiCallbacks->pCallbacksProvider != NULL &&
           pCurlRequest->pCurlResponse != NULL);
+    STRNCPY(streamName, pCurlRequest->streamName, SIZEOF(pCurlRequest->streamName));
     pCurlApiCallbacks = pCurlRequest->pCurlApiCallbacks;
     pCallbacksProvider = pCurlApiCallbacks->pCallbacksProvider;
 
@@ -1691,7 +1714,7 @@ PVOID getStreamingEndpointCurlHandler(PVOID arg)
     pResponseStr = pCurlResponse->callInfo.responseData;
     resultLen = pCurlResponse->callInfo.responseDataLen;
 
-    DLOGD("GetStreamingEndpoint API response: %.*s", resultLen, pResponseStr);
+    DLOGD("[%s] GetStreamingEndpoint API response: %.*s", streamName, resultLen, pResponseStr);
 
     // Parse the response
     jsmn_init(&parser);
@@ -1702,7 +1725,7 @@ PVOID getStreamingEndpointCurlHandler(PVOID arg)
     // Loop through the tokens and extract the endpoint
     for (i = 1, stopLoop = FALSE; i < (UINT32) tokenCount && !stopLoop; i++) {
         if (compareJsonString(pResponseStr, &tokens[i], JSMN_STRING, (PCHAR) "DataEndpoint")) {
-            strLen = (UINT32)(tokens[i + 1].end - tokens[i + 1].start);
+            strLen = (UINT32) (tokens[i + 1].end - tokens[i + 1].start);
             CHK(strLen <= MAX_URI_CHAR_LEN, STATUS_INVALID_API_CALL_RETURN_JSON);
             STRNCPY(streamingEndpoint, pResponseStr + tokens[i + 1].start, strLen);
             streamingEndpoint[strLen] = '\0';
@@ -1769,7 +1792,7 @@ CleanUp:
     LEAVES();
 
     // Returning STATUS as PVOID casting first to ptr type to avoid compiler warnings on 64bit platforms.
-    return (PVOID)(ULONG_PTR) retStatus;
+    return (PVOID) (ULONG_PTR) retStatus;
 }
 
 STATUS tagResourceCurl(UINT64 customData, PCHAR streamArn, UINT32 tagCount, PTag tags, PServiceCallContext pServiceCallContext)
@@ -1829,7 +1852,7 @@ STATUS tagResourceCurl(UINT64 customData, PCHAR streamArn, UINT32 tagCount, PTag
     // Create a request object
     currentTime = pCallbacksProvider->clientCallbacks.getCurrentTimeFn(pCallbacksProvider->clientCallbacks.customData);
     CHK_STATUS(createCurlRequest(HTTP_REQUEST_VERB_POST, url, paramsJson, streamHandle, pCurlApiCallbacks->region, currentTime,
-                                 CURL_API_DEFAULT_CONNECTION_TIMEOUT, pServiceCallContext->timeout, pServiceCallContext->callAfter,
+                                 pServiceCallContext->connectionTimeout, pServiceCallContext->timeout, pServiceCallContext->callAfter,
                                  pCurlApiCallbacks->certPath, pCredentials, pCurlApiCallbacks, &pCurlRequest));
 
     // Set the necessary headers
@@ -1861,15 +1884,17 @@ STATUS tagResourceCurl(UINT64 customData, PCHAR streamArn, UINT32 tagCount, PTag
 
 CleanUp:
 
+    if (startLocked) {
+        // Release the lock to let the awaiting handler thread to continue
+        pCallbacksProvider->clientCallbacks.unlockMutexFn(pCallbacksProvider->clientCallbacks.customData, pCurlRequest->startLock);
+    }
+
     if (STATUS_FAILED(retStatus)) {
         if (IS_VALID_TID_VALUE(threadId)) {
             THREAD_CANCEL(threadId);
         }
 
         freeCurlRequest(&pCurlRequest);
-    } else if (startLocked) {
-        // Release the lock to let the awaiting handler thread to continue
-        pCallbacksProvider->clientCallbacks.unlockMutexFn(pCallbacksProvider->clientCallbacks.customData, pCurlRequest->startLock);
     }
 
     if (shutdownLocked) {
@@ -1991,7 +2016,7 @@ CleanUp:
     LEAVES();
 
     // Returning STATUS as PVOID casting first to ptr type to avoid compiler warnings on 64bit platforms.
-    return (PVOID)(ULONG_PTR) retStatus;
+    return (PVOID) (ULONG_PTR) retStatus;
 }
 
 STATUS putStreamCurl(UINT64 customData, PCHAR streamName, PCHAR containerType, UINT64 startTimestamp, BOOL absoluteFragmentTimestamp,
@@ -2043,7 +2068,7 @@ STATUS putStreamCurl(UINT64 customData, PCHAR streamName, PCHAR containerType, U
     // Create a request object
     currentTime = pCallbacksProvider->clientCallbacks.getCurrentTimeFn(pCallbacksProvider->clientCallbacks.customData);
     CHK_STATUS(createCurlRequest(HTTP_REQUEST_VERB_POST, url, NULL, (STREAM_HANDLE) pServiceCallContext->customData, pCurlApiCallbacks->region,
-                                 currentTime, CURL_API_DEFAULT_CONNECTION_TIMEOUT, pServiceCallContext->timeout, pServiceCallContext->callAfter,
+                                 currentTime, pServiceCallContext->connectionTimeout, pServiceCallContext->timeout, pServiceCallContext->callAfter,
                                  pCurlApiCallbacks->certPath, pCredentials, pCurlApiCallbacks, &pCurlRequest));
 
     // Set the necessary headers
@@ -2053,9 +2078,9 @@ STATUS putStreamCurl(UINT64 customData, PCHAR streamName, PCHAR containerType, U
     SNPRINTF(startTimestampStr, MAX_TIMESTAMP_STR_LEN + 1, (PCHAR) "%" PRIu64 ".%" PRIu64, startTimestampMillis / 1000, startTimestampMillis % 1000);
     CHK_STATUS(setRequestHeader(&pCurlRequest->requestInfo, (PCHAR) "x-amzn-producer-start-timestamp", 0, startTimestampStr, 0));
     CHK_STATUS(
-        setRequestHeader(&pCurlRequest->requestInfo, (PCHAR) "x-amzn-fragment-acknowledgment-required", 0, (PCHAR)(acksEnabled ? "1" : "0"), 0));
+        setRequestHeader(&pCurlRequest->requestInfo, (PCHAR) "x-amzn-fragment-acknowledgment-required", 0, (PCHAR) (acksEnabled ? "1" : "0"), 0));
     CHK_STATUS(setRequestHeader(&pCurlRequest->requestInfo, (PCHAR) "x-amzn-fragment-timecode-type", 0,
-                                (PCHAR)(absoluteFragmentTimestamp ? "ABSOLUTE" : "RELATIVE"), 0));
+                                (PCHAR) (absoluteFragmentTimestamp ? "ABSOLUTE" : "RELATIVE"), 0));
     CHK_STATUS(setRequestHeader(&pCurlRequest->requestInfo, (PCHAR) "transfer-encoding", 0, (PCHAR) "chunked", 0));
     CHK_STATUS(setRequestHeader(&pCurlRequest->requestInfo, (PCHAR) "connection", 0, (PCHAR) "keep-alive", 0));
 
@@ -2115,6 +2140,7 @@ PVOID putStreamCurlHandler(PVOID arg)
     PCallbacksProvider pCallbacksProvider = NULL;
     PCurlResponse pCurlResponse = NULL;
     BOOL endOfStream = FALSE, requestTerminating = FALSE;
+    CHAR streamName[MAX_STREAM_NAME_LEN + 1];
     SERVICE_CALL_RESULT callResult = SERVICE_CALL_RESULT_NOT_SET;
     STREAM_HANDLE streamHandle = INVALID_STREAM_HANDLE_VALUE;
     UPLOAD_HANDLE uploadHandle = INVALID_UPLOAD_HANDLE_VALUE;
@@ -2123,6 +2149,7 @@ PVOID putStreamCurlHandler(PVOID arg)
           pCurlRequest->pCurlResponse != NULL);
     pCurlApiCallbacks = pCurlRequest->pCurlApiCallbacks;
     pCallbacksProvider = pCurlApiCallbacks->pCallbacksProvider;
+    STRNCPY(streamName, pCurlRequest->streamName, SIZEOF(pCurlRequest->streamName));
 
     // Acquire and release the startup lock to ensure the startup sequence is clear
     pCallbacksProvider->clientCallbacks.lockMutexFn(pCallbacksProvider->clientCallbacks.customData, pCurlRequest->startLock);
@@ -2169,9 +2196,9 @@ CleanUp:
 
     if (!requestTerminating) {
         if (!endOfStream) {
-            DLOGW("Stream with streamHandle %" PRIu64 " uploadHandle %" PRIu64
+            DLOGW("[%s] Stream with streamHandle %" PRIu64 " uploadHandle %" PRIu64
                   " has exited without triggering end-of-stream. Service call result: %u",
-                  streamHandle, uploadHandle, callResult);
+                  streamName, streamHandle, uploadHandle, callResult);
             kinesisVideoStreamTerminated(streamHandle, uploadHandle, callResult);
         }
 
@@ -2181,7 +2208,7 @@ CleanUp:
 
     LEAVES();
     // Returning STATUS as PVOID casting first to ptr type to avoid compiler warnings on 64bit platforms.
-    return (PVOID)(ULONG_PTR) retStatus;
+    return (PVOID) (ULONG_PTR) retStatus;
 }
 
 // Accquire activeUploads lock before calling this function!!!
