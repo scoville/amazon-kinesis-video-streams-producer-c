@@ -14,6 +14,7 @@ STATUS createCurlApiCallbacks(PCallbacksProvider pCallbacksProvider, PCHAR regio
     ENTERS();
     STATUS retStatus = STATUS_SUCCESS, status;
     PCurlApiCallbacks pCurlApiCallbacks = NULL;
+    KvsControlPlaneEndpointType controlPlaneEndpointType;
 
     CHK(pCallbacksProvider != NULL && ppCurlApiCallbacks != NULL, STATUS_NULL_ARG);
     CHK(certPath == NULL || STRNLEN(certPath, MAX_PATH_LEN + 1) <= MAX_PATH_LEN, STATUS_INVALID_CERT_PATH_LENGTH);
@@ -77,26 +78,11 @@ STATUS createCurlApiCallbacks(PCallbacksProvider pCallbacksProvider, PCHAR regio
         DLOGW("Failed to generate user agent string with error 0x%08x.", status);
     }
 
-    // Set the control plane URL
-    if (controlPlaneUrl == NULL || controlPlaneUrl[0] == '\0') {
-        if (0 == STRNCMP(pCurlApiCallbacks->region, AWS_ISO_B_REGION_PREFIX, STRLEN(AWS_ISO_B_REGION_PREFIX))) {
-            SNPRINTF(pCurlApiCallbacks->controlPlaneUrl, MAX_URI_CHAR_LEN, "%s%s%s.%s%s", CONTROL_PLANE_URI_PREFIX, KINESIS_VIDEO_SERVICE_NAME,
-                     AWS_KVS_FIPS_ENDPOINT_POSTFIX, pCurlApiCallbacks->region, CONTROL_PLANE_URI_POSTFIX_ISO_B);
-            // Region is in "aws-iso" partition
-        } else if (0 == STRNCMP(pCurlApiCallbacks->region, AWS_ISO_REGION_PREFIX, STRLEN(AWS_ISO_REGION_PREFIX))) {
-            SNPRINTF(pCurlApiCallbacks->controlPlaneUrl, MAX_URI_CHAR_LEN, "%s%s%s.%s%s", CONTROL_PLANE_URI_PREFIX, KINESIS_VIDEO_SERVICE_NAME,
-                     AWS_KVS_FIPS_ENDPOINT_POSTFIX, pCurlApiCallbacks->region, CONTROL_PLANE_URI_POSTFIX_ISO);
-        } else if (0 == STRNCMP(pCurlApiCallbacks->region, AWS_GOV_CLOUD_REGION_PREFIX, STRLEN(AWS_GOV_CLOUD_REGION_PREFIX))) {
-            SNPRINTF(pCurlApiCallbacks->controlPlaneUrl, MAX_URI_CHAR_LEN, "%s%s%s.%s%s", CONTROL_PLANE_URI_PREFIX, KINESIS_VIDEO_SERVICE_NAME,
-                     AWS_KVS_FIPS_ENDPOINT_POSTFIX, pCurlApiCallbacks->region, CONTROL_PLANE_URI_POSTFIX);
-        } else if (0 == STRNCMP(pCurlApiCallbacks->region, AWS_CN_REGION_PREFIX, STRLEN(AWS_CN_REGION_PREFIX))) {
-            SNPRINTF(pCurlApiCallbacks->controlPlaneUrl, MAX_URI_CHAR_LEN, "%s%s.%s%s", CONTROL_PLANE_URI_PREFIX, KINESIS_VIDEO_SERVICE_NAME,
-                     pCurlApiCallbacks->region, CONTROL_PLANE_URI_POSTFIX_CN);
-        } else {
-            // Create a fully qualified URI
-            SNPRINTF(pCurlApiCallbacks->controlPlaneUrl, MAX_URI_CHAR_LEN, "%s%s.%s%s", CONTROL_PLANE_URI_PREFIX, KINESIS_VIDEO_SERVICE_NAME,
-                     pCurlApiCallbacks->region, CONTROL_PLANE_URI_POSTFIX);
-        }
+    // Construct Control Plane URL
+    if (IS_NULL_OR_EMPTY_STRING(controlPlaneUrl)) {
+        CHK_STATUS(determineKvsControlPlaneEndpointType(&controlPlaneEndpointType));
+        CHK_STATUS(
+            constructControlPlaneUrl(pCurlApiCallbacks->controlPlaneUrl, MAX_URI_CHAR_LEN, pCurlApiCallbacks->region, controlPlaneEndpointType));
     } else {
         STRNCPY(pCurlApiCallbacks->controlPlaneUrl, controlPlaneUrl, MAX_URI_CHAR_LEN);
     }
@@ -148,7 +134,9 @@ STATUS createCurlApiCallbacks(PCallbacksProvider pCallbacksProvider, PCHAR regio
     CHK_STATUS(initializeSslCallbacks());
 
     // CURL global initialization
+    DLOGD("Initializing curl");
     CHK(0 == curl_global_init(CURL_GLOBAL_ALL), STATUS_CURL_LIBRARY_INIT_FAILED);
+    DLOGD("Successfully initialized curl");
 
     // Not in shutdown
     ATOMIC_STORE_BOOL(&pCurlApiCallbacks->shutdown, FALSE);
@@ -189,6 +177,91 @@ CleanUp:
     if (ppCurlApiCallbacks != NULL) {
         *ppCurlApiCallbacks = pCurlApiCallbacks;
     }
+
+    LEAVES();
+    return retStatus;
+}
+
+STATUS determineKvsControlPlaneEndpointType(PKvsControlPlaneEndpointType pEndpointType)
+{
+    ENTERS();
+    STATUS retStatus = STATUS_SUCCESS;
+    BOOL isDualStack = FALSE;
+    const char* envValue;
+
+    CHK(pEndpointType != NULL, STATUS_NULL_ARG);
+
+#if defined(AWS_KVS_USE_LEGACY_ENDPOINT_ONLY)
+    *pEndpointType = ENDPOINT_TYPE_LEGACY;
+    DLOGI("Using legacy endpoint from AWS_KVS_USE_LEGACY_ENDPOINT_ONLY");
+#elif defined(AWS_KVS_USE_DUAL_STACK_ENDPOINT_ONLY)
+    *pEndpointType = ENDPOINT_TYPE_DUAL_STACK;
+    DLOGI("Using dual stack endpoint from AWS_KVS_USE_DUAL_STACK_ENDPOINT_ONLY");
+#else
+    envValue = GETENV(CONTROL_PLANE_USE_DUAL_STACK_ENDPOINT_ENV_VAR);
+
+    // Check for "true" to make sure "false" actually disables it
+    // https://docs.aws.amazon.com/sdkref/latest/guide/feature-endpoints.html
+    isDualStack = (envValue != NULL) && (0 == STRNCMPI(envValue, "true", 4));
+    *pEndpointType = isDualStack ? ENDPOINT_TYPE_DUAL_STACK : ENDPOINT_TYPE_LEGACY;
+
+    DLOGI("Using %s endpoint from environment", endpointTypeToString(*pEndpointType));
+#endif
+
+CleanUp:
+    CHK_LOG_ERR(retStatus);
+
+    LEAVES();
+    return retStatus;
+}
+
+const char* endpointTypeToString(const KvsControlPlaneEndpointType type)
+{
+    switch (type) {
+        case ENDPOINT_TYPE_LEGACY:
+            return "LEGACY";
+        case ENDPOINT_TYPE_DUAL_STACK:
+            return "DUAL_STACK";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+STATUS constructControlPlaneUrl(const char* buffer, SIZE_T bufferSize, const char* region, KvsControlPlaneEndpointType endpointType)
+{
+    ENTERS();
+    STATUS retStatus = STATUS_SUCCESS;
+    const char* serviceNamePostfix = "";
+    const char* postfix;
+
+    CHK(buffer != NULL && region != NULL, STATUS_NULL_ARG);
+    CHK(bufferSize > 0, STATUS_INVALID_ARG_LEN);
+
+    if (0 == STRNCMP(region, AWS_ISO_B_REGION_PREFIX, STRLEN(AWS_ISO_B_REGION_PREFIX))) {
+        // Top Secret Cloud regions: https://kinesisvideo-fips.us-isob-east-1.sc2s.sgov.gov
+        serviceNamePostfix = AWS_KVS_FIPS_ENDPOINT_POSTFIX;
+        postfix = (endpointType == ENDPOINT_TYPE_LEGACY) ? CONTROL_PLANE_URI_POSTFIX_ISO_B : CONTROL_PLANE_URI_POSTFIX_ISO_B_DUAL_STACK;
+    } else if (0 == STRNCMP(region, AWS_ISO_REGION_PREFIX, STRLEN(AWS_ISO_REGION_PREFIX))) {
+        // Secret Cloud regions: https://kinesisvideo-fips.us-iso-east-1.c2s.ic.gov
+        serviceNamePostfix = AWS_KVS_FIPS_ENDPOINT_POSTFIX;
+        postfix = (endpointType == ENDPOINT_TYPE_LEGACY) ? CONTROL_PLANE_URI_POSTFIX_ISO : CONTROL_PLANE_URI_POSTFIX_ISO_DUAL_STACK;
+    } else if (0 == STRNCMP(region, AWS_GOV_CLOUD_REGION_PREFIX, STRLEN(AWS_GOV_CLOUD_REGION_PREFIX))) {
+        // US Govcloud regions: https://kinesisvideo-fips.us-gov-east-1.amazonaws.com
+        serviceNamePostfix = AWS_KVS_FIPS_ENDPOINT_POSTFIX;
+        postfix = (endpointType == ENDPOINT_TYPE_LEGACY) ? CONTROL_PLANE_URI_POSTFIX : CONTROL_PLANE_URI_POSTFIX_DUAL_STACK;
+    } else if (0 == STRNCMP(region, AWS_CN_REGION_PREFIX, STRLEN(AWS_CN_REGION_PREFIX))) {
+        // China regions: https://kinesisvideo.cn-north-1.amazonaws.com.cn"
+        postfix = (endpointType == ENDPOINT_TYPE_LEGACY) ? CONTROL_PLANE_URI_POSTFIX_CN : CONTROL_PLANE_URI_POSTFIX_CN_DUAL_STACK;
+    } else {
+        // Standard regions: https://kinesisvideo.us-west-2.amazonaws.com
+        postfix = (endpointType == ENDPOINT_TYPE_LEGACY) ? CONTROL_PLANE_URI_POSTFIX : CONTROL_PLANE_URI_POSTFIX_DUAL_STACK;
+    }
+
+    // Create a fully qualified URI
+    SNPRINTF((PCHAR) buffer, bufferSize, "%s%s%s.%s%s", CONTROL_PLANE_URI_PREFIX, KINESIS_VIDEO_SERVICE_NAME, serviceNamePostfix, region, postfix);
+
+CleanUp:
+    CHK_LOG_ERR(retStatus);
 
     LEAVES();
     return retStatus;
@@ -1040,6 +1113,7 @@ STATUS createStreamCachingCurl(UINT64 customData, PCHAR deviceName, PCHAR stream
     PCurlApiCallbacks pCurlApiCallbacks = (PCurlApiCallbacks) customData;
     PCallbacksProvider pCallbacksProvider = NULL;
     BOOL emulateApiCall = TRUE;
+    UINT64 currentTime;
 
     CHK(pCurlApiCallbacks != NULL && pCurlApiCallbacks->pCallbacksProvider != NULL && pServiceCallContext != NULL, STATUS_INVALID_ARG);
     pCallbacksProvider = pCurlApiCallbacks->pCallbacksProvider;
@@ -1056,6 +1130,9 @@ STATUS createStreamCachingCurl(UINT64 customData, PCHAR deviceName, PCHAR stream
         // Early return
         CHK(FALSE, retStatus);
     }
+
+    // Respect the callAfter to honor backoff wait time from the state machine retry strategy
+    honorCallAfterWaitTime(pCallbacksProvider, pServiceCallContext);
 
     DLOGV("[%s] No-op CreateStream API call", streamName);
 
@@ -1274,6 +1351,7 @@ STATUS describeStreamCachingCurl(UINT64 customData, PCHAR streamName, PServiceCa
     StreamDescription streamDescription;
     PStreamInfo pStreamInfo;
     BOOL emulateApiCall = TRUE;
+    UINT64 currentTime;
 
     CHK(pCurlApiCallbacks != NULL && pCurlApiCallbacks->pCallbacksProvider != NULL && pServiceCallContext != NULL, STATUS_INVALID_ARG);
     pCallbacksProvider = pCurlApiCallbacks->pCallbacksProvider;
@@ -1290,6 +1368,9 @@ STATUS describeStreamCachingCurl(UINT64 customData, PCHAR streamName, PServiceCa
         // Early return
         CHK(FALSE, retStatus);
     }
+
+    // Respect the callAfter to honor backoff wait time from the state machine retry strategy
+    honorCallAfterWaitTime(pCallbacksProvider, pServiceCallContext);
 
     // Get the stream info from the stream handle
     CHK_STATUS(kinesisVideoStreamGetStreamInfo(streamHandle, &pStreamInfo));
@@ -1593,6 +1674,9 @@ STATUS getStreamingEndpointCachingCurl(UINT64 customData, PCHAR streamName, PCHA
     pCallbacksProvider = pCurlApiCallbacks->pCallbacksProvider;
 
     streamHandle = (STREAM_HANDLE) pServiceCallContext->customData;
+
+    // Respect the callAfter to honor backoff wait time from the state machine retry strategy
+    honorCallAfterWaitTime(pCallbacksProvider, pServiceCallContext);
 
     // We check whether we have already made the call by checking
     // for the presence of the endpoint in the cache.
@@ -1925,6 +2009,7 @@ STATUS tagResourceCachingCurl(UINT64 customData, PCHAR streamArn, UINT32 tagCoun
     PCallbacksProvider pCallbacksProvider = NULL;
     STREAM_HANDLE streamHandle;
     BOOL emulateApiCall = TRUE;
+    UINT64 currentTime;
 
     CHK(pCurlApiCallbacks != NULL && pCurlApiCallbacks->pCallbacksProvider != NULL && pServiceCallContext != NULL, STATUS_INVALID_ARG);
     pCallbacksProvider = pCurlApiCallbacks->pCallbacksProvider;
@@ -1941,6 +2026,9 @@ STATUS tagResourceCachingCurl(UINT64 customData, PCHAR streamArn, UINT32 tagCoun
         // Early return
         CHK(FALSE, retStatus);
     }
+
+    // Respect the callAfter to honor backoff wait time from the state machine retry strategy
+    honorCallAfterWaitTime(pCallbacksProvider, pServiceCallContext);
 
     DLOGV("Caching TagResource API call");
     retStatus = tagResourceResultEvent(streamHandle, SERVICE_CALL_RESULT_OK);
@@ -2202,8 +2290,20 @@ CleanUp:
             kinesisVideoStreamTerminated(streamHandle, uploadHandle, callResult);
         }
 
-        // Bubble the notification to potential listeners
-        notifyCallResult(pCallbacksProvider, retStatus, streamHandle);
+        if (callResult != SERVICE_CALL_RESULT_OK && callResult != SERVICE_CALL_RESULT_NOT_SET) {
+            // Non-retriable, non-recoverable errors (e.g., 403/401 auth failures) are reported
+            // to the application with the actual HTTP error from curl response.
+            // Retriable/recoverable errors (timeouts, 500s, 404s) are handled by PIC's state machine.
+            STATUS callStatus = serviceCallResultCheck(callResult);
+            if (!IS_RETRIABLE_ERROR(callStatus) && !IS_RECOVERABLE_ERROR(callStatus)) {
+                notifyCallResult(pCallbacksProvider, callStatus, streamHandle);
+            } else {
+                notifyCallResult(pCallbacksProvider, retStatus, streamHandle);
+            }
+        } else {
+            // notify with retStatus in case of internal failures
+            notifyCallResult(pCallbacksProvider, retStatus, streamHandle);
+        }
     }
 
     LEAVES();
